@@ -351,112 +351,269 @@ def solve(payload: Any) -> Dict[str, Any]:
                     {}).as_dict()}
 
     # ------------------------------------------------------------------ #
-    # 阶段一：枚举边料子集 U，按 (张数, 可裁面积和) 升序，用 MRV 回溯
-    # 判定"只使用 U 中边料"是否可行。边料 ≤ 8（最多 255 个非空子集）、
-    # 破损 ≤ 5，且按张数从小到大通常在 D=1..3 即命中。
+    # 角点（normal pattern）锚点：矩形装箱存在等价规范布局——每片的
+    # y 坐标可表为 0 与若干片高之和（下方接触链），右缘接触给出的 x
+    # 坐标同理为 0 与若干片宽之和。x 还须保持左缘水印相位，故对每个
+    # 接触坐标 X 取"不小于 X 且同相位的最近格点"。只在这些角点上分
+    # 支不损失可行性，也不改变字典序最优：字典序最小方案本身必为角点
+    # 布局，否则把最早可向左/向下滑移的裁片滑移（边料不变、相位不
+    # 变）即得到更小的字典序。
+    # ------------------------------------------------------------------ #
+    width_sums = {0}
+    for d in damages:
+        width_sums |= {s + d.width for s in width_sums}
+    height_sums = {0}
+    for d in damages:
+        height_sums |= {s + d.height for s in height_sums}
+
+    # anchors[i] 每项：(cands 原下标, Remnant, x, y, 左相位, 右相位)，
+    # 顺序沿用 cands[i] 的 (边料序号, x, y) 升序。
+    anchors: List[List[Tuple[int, Remnant, int, int, int, int]]] = []
+    for i in range(n_d):
+        wi, hi = damages[i].width, damages[i].height
+        out: List[Tuple[int, Remnant, int, int, int, int]] = []
+        for ridx in sorted({c[0].idx for c in cands[i]}):
+            r = remnants[ridx]
+            max_x = r.width - wi
+            max_y = r.height - hi
+            ys = {s for s in height_sums if s <= max_y}
+            x_base = sorted(s for s in width_sums if s <= max_x)
+            # 相位 -> 接触坐标对应的最近同相位格点（相位 residue 随边料
+            # 原点/周期而异，故只统计本边料上的候选）
+            xs_by_phase: Dict[int, set] = {}
+            for (rr0, x, _, lp, _) in cands[i]:
+                if rr0.idx != ridx or lp in xs_by_phase:
+                    continue
+                a = (lp - r.origin) % r.period  # 该左缘相位要求的 x 模 period
+                xs_by_phase[lp] = {
+                    xp for X in x_base
+                    if (xp := X + (a - X) % r.period) <= max_x
+                }
+            for k, (rr, x, y, lp, rp) in enumerate(cands[i]):
+                if rr.idx == ridx and y in ys and x in xs_by_phase[lp]:
+                    out.append((k, rr, x, y, lp, rp))
+        anchors.append(out)
+
+    # ------------------------------------------------------------------ #
+    # 位运算基础设施（位空间只覆盖锚点候选）：按破损分段，段内顺序即
+    # anchors[i] 的 (边料序号, x, y) 升序。同一边料上两个锚点是否几何
+    # 重叠，在对方破损的位置网格中恰为一个连续矩形子域，用二维异或前
+    # 缀表以 O(1) 个大整数运算求出冲突掩码；次数与相位约束同样用位掩
+    # 码表达。MRV 每节点只做数次大整数运算，避免逐候选重复线性扫描。
+    # ------------------------------------------------------------------ #
+
+    offsets: List[int] = [0]
+    for i in range(n_d - 1):
+        offsets.append(offsets[-1] + len(anchors[i]))
+    total_bits = offsets[-1] + len(anchors[n_d - 1])
+    ALL_BITS = (1 << total_bits) - 1
+
+    def gbit(i: int, k: int) -> int:
+        return 1 << (offsets[i] + k)
+
+    # 每处破损的初始域（弧一致性过滤后的全部锚点）
+    domain0: List[int] = []
+    for i in range(n_d):
+        m = len(anchors[i])
+        domain0.append(((1 << m) - 1) << offsets[i] if m else 0)
+
+    # 边料 -> 该边料上全部锚点位；相位 -> 具有该左/右缘相位的锚点位
+    remnant_bits = [0] * n_r
+    lp_bits: List[Dict[int, int]] = [dict() for _ in range(n_d)]
+    rp_bits: List[Dict[int, int]] = [dict() for _ in range(n_d)]
+    for i in range(n_d):
+        for k, (_, r, x, y, lp, rp) in enumerate(anchors[i]):
+            b = gbit(i, k)
+            remnant_bits[r.idx] |= b
+            lp_bits[i][lp] = lp_bits[i].get(lp, 0) | b
+            rp_bits[i][rp] = rp_bits[i].get(rp, 0) | b
+
+    # 冲突掩码 row_conflict[i][k]：与破损 i 的锚点 k 同边料且几何重叠的
+    # 其他破损锚点位。
+    row_conflict: List[List[int]] = [
+        [0] * len(anchors[i]) for i in range(n_d)
+    ]
+    for r in remnants:
+        # 该边料上每个破损的锚点位置网格二维异或前缀表（缺位置置 0）。
+        # 位彼此互不相同，矩形区域内的位在异或公式中恰出现奇数次。
+        grids: Dict[int, Tuple[List[List[int]], int, int]] = {}
+        entries: Dict[int, List[Tuple[int, int, int]]] = {}
+        for j in range(n_d):
+            ej = [(k, c[2], c[3]) for k, c in enumerate(anchors[j])
+                  if c[1].idx == r.idx]
+            if not ej:
+                continue
+            entries[j] = ej
+            wj, hj = damages[j].width, damages[j].height
+            nx, ny = r.width - wj, r.height - hj
+            cells = [[0] * (nx + 1) for _ in range(ny + 1)]
+            for k, x, y in ej:
+                cells[y][x] = gbit(j, k)
+            pref = [[0] * (nx + 2) for _ in range(ny + 2)]
+            for yy in range(1, ny + 2):
+                run = 0
+                prow = pref[yy]
+                pprev = pref[yy - 1]
+                crow = cells[yy - 1]
+                for xx in range(1, nx + 2):
+                    run ^= crow[xx - 1]
+                    prow[xx] = pprev[xx] ^ run
+            grids[j] = (pref, nx, ny)
+
+        for i in range(n_d):
+            wi, hi = damages[i].width, damages[i].height
+            for k, x, y in entries.get(i, ()):
+                mask = 0
+                for j, (pref, nxj, nyj) in grids.items():
+                    if j == i:
+                        continue
+                    wj, hj = damages[j].width, damages[j].height
+                    x0 = max(0, x - wj + 1)
+                    x1 = min(nxj, x + wi - 1)
+                    y0 = max(0, y - hj + 1)
+                    y1 = min(nyj, y + hi - 1)
+                    if x0 <= x1 and y0 <= y1:
+                        mask ^= (pref[y1 + 1][x1 + 1]
+                                 ^ pref[y0][x1 + 1]
+                                 ^ pref[y1 + 1][x0]
+                                 ^ pref[y0][x0])
+                row_conflict[i][k] = mask
+
+
+    # ------------------------------------------------------------------ #
+    # 阶段一：枚举边料子集 U，按 (张数, 可裁面积和) 升序，用基于位掩码
+    # 的 MRV 回溯判定"只使用 U 中边料"是否可行。边料 ≤ 8（最多 255 个
+    # 非空子集）、破损 ≤ 5，且按张数从小到大通常在 D=1..3 即命中。
     # 收集所有达到 (最优张数, 最优面积) 的可行子集，供阶段二求字典序
     # 最优；严格更差（张数更多或同张数面积更大）的子集直接停止。
     # ------------------------------------------------------------------ #
+
+    def feasible_on(allowed: Tuple[int, ...]) -> bool:
+        """位掩码 MRV 回溯：判定 allowed 边料集上是否可行。"""
+        aset = set(allowed)
+        # 预筛 1：次数总容量
+        if sum(remnants[r].uses for r in aset) < n_d:
+            return False
+        amask = 0
+        for r in aset:
+            amask |= remnant_bits[r]
+        local: List[List[int]] = [
+            [k for k in range(len(anchors[i]))
+             if amask & gbit(i, k)]
+            for i in range(n_d)
+        ]
+        dom = [0] * n_d
+        # 预筛 2：每处破损在该子集上至少有候选
+        if any(not ks for ks in local):
+            return False
+        # 预筛 3：在该子集上重算水印相位链的前/后向可达性，只保留链安全候选
+        fwd: List[set] = [{anchors[0][k][4] for k in local[0]}]
+        for i in range(1, n_d):
+            rr = {anchors[i - 1][k][5] for k in local[i - 1]
+                  if anchors[i - 1][k][4] in fwd[-1]}
+            fwd.append(rr & {anchors[i][k][4] for k in local[i]})
+            if not fwd[-1]:
+                return False
+        bwd: List[set] = [set() for _ in range(n_d)]
+        bwd[n_d - 1] = {anchors[n_d - 1][k][5] for k in local[n_d - 1]}
+        for i in range(n_d - 2, -1, -1):
+            need = {anchors[i + 1][k][4] for k in local[i + 1]
+                    if anchors[i + 1][k][5] in bwd[i + 1]}
+            bwd[i] = need & {anchors[i][k][5] for k in local[i]}
+            if not bwd[i]:
+                return False
+        for i in range(n_d):
+            for k in local[i]:
+                if anchors[i][k][4] in fwd[i] and anchors[i][k][5] in bwd[i]:
+                    dom[i] |= gbit(i, k)
+            if not dom[i]:
+                return False
+
+        assign = [-1] * n_d
+        used_count = [0] * n_r
+        forbidden = [0] * n_d       # 被同料已放裁片几何封锁的候选位
+        left_need = [ALL_BITS] * n_d   # 右邻已定时要求的左缘相位掩码
+        right_need = [ALL_BITS] * n_d  # 左邻已定时要求的右缘相位掩码
+        closed = 0                  # 次数已耗尽边料上的候选位
+
+        def legal_mask(i: int) -> int:
+            return (dom[i] & left_need[i] & right_need[i]
+                    & ~(forbidden[i] | closed))
+
+        def backtrack() -> bool:
+            nonlocal closed
+            mrv_i = -1
+            mrv_bits = 0
+            mrv_n = 10 ** 12
+            for i in range(n_d):
+                if assign[i] >= 0:
+                    continue
+                bits = legal_mask(i)
+                cnt = bits.bit_count()
+                if cnt == 0:
+                    return False  # 前向检查：此处已无解
+                if cnt < mrv_n:
+                    mrv_n, mrv_i, mrv_bits = cnt, i, bits
+            if mrv_i < 0:
+                return True
+            i = mrv_i
+            off = offsets[i]
+            opts: List[Tuple[int, int]] = []
+            b = mrv_bits
+            while b:
+                lsb = b & -b
+                k = lsb.bit_length() - 1 - off
+                opts.append((k, anchors[i][k][1].idx))
+                b ^= lsb
+            # 先试复用边料（张数紧时更快撞出解）
+            opts.sort(key=lambda t: (1 if used_count[t[1]] == 0 else 0,
+                                     t[1], anchors[i][t[0]][2],
+                                     anchors[i][t[0]][3]))
+            for k, ridx in opts:
+                _, r, x, y, lp, rp = anchors[i][k]
+                # 快照，供回溯精确还原
+                snap_forb = [(q, forbidden[q])
+                             for q in range(n_d)
+                             if q != i and assign[q] < 0]
+                conflict = row_conflict[i][k]
+                for q, _ in snap_forb:
+                    forbidden[q] |= conflict
+                closed_before = closed
+                used_count[ridx] += 1
+                if used_count[ridx] >= r.uses:
+                    closed |= remnant_bits[ridx]
+                snap_left = snap_right = None
+                if i > 0 and assign[i - 1] < 0:
+                    snap_left = (i - 1, right_need[i - 1])
+                    right_need[i - 1] = rp_bits[i - 1].get(lp, 0)
+                if i < n_d - 1 and assign[i + 1] < 0:
+                    snap_right = (i + 1, left_need[i + 1])
+                    left_need[i + 1] = lp_bits[i + 1].get(rp, 0)
+                assign[i] = k
+
+                if backtrack():
+                    return True
+
+                assign[i] = -1
+                if snap_right is not None:
+                    q, v = snap_right
+                    left_need[q] = v
+                if snap_left is not None:
+                    q, v = snap_left
+                    right_need[q] = v
+                closed = closed_before
+                used_count[ridx] -= 1
+                for q, v in snap_forb:
+                    forbidden[q] = v
+            return False
+
+        return backtrack()
 
     subsets: List[Tuple[int, int, Tuple[int, ...]]] = []
     for mask in range(1, 1 << n_r):
         idxs = tuple(b for b in range(n_r) if mask & (1 << b))
         subsets.append((len(idxs), sum(remnant_area[b] for b in idxs), idxs))
     subsets.sort(key=lambda t: (t[0], t[1], t[2]))
-
-    def feasible_on(allowed: Tuple[int, ...]) -> Optional[List[int]]:
-        """MRV 回溯判定 allowed 边料集上是否可行；可行返回某完整分配。"""
-        aset = set(allowed)
-        # 预筛 1：次数总容量
-        if sum(remnants[r].uses for r in aset) < n_d:
-            return None
-        local: List[List[int]] = [
-            [ci for ci in range(len(cands[i]))
-             if cands[i][ci][0].idx in aset]
-            for i in range(n_d)
-        ]
-        # 预筛 2：每处破损在该子集上至少有候选
-        if any(not local[i] for i in range(n_d)):
-            return None
-        # 预筛 3：在该子集上重算水印相位链可达性，只保留链安全候选
-        fwd: List[set] = [{cands[0][ci][3] for ci in local[0]}]
-        for i in range(1, n_d):
-            rr = {cands[i - 1][ci][4] for ci in local[i - 1]
-                  if cands[i - 1][ci][3] in fwd[-1]}
-            fwd.append(rr & {cands[i][ci][3] for ci in local[i]})
-            if not fwd[-1]:
-                return None
-        bwd: List[set] = [set() for _ in range(n_d)]
-        bwd[n_d - 1] = {cands[n_d - 1][ci][4]
-                        for ci in local[n_d - 1]}
-        for i in range(n_d - 2, -1, -1):
-            need = {cands[i + 1][ci][3] for ci in local[i + 1]
-                    if cands[i + 1][ci][4] in bwd[i + 1]}
-            bwd[i] = need & {cands[i][ci][4] for ci in local[i]}
-            if not bwd[i]:
-                return None
-        for i in range(n_d):
-            local[i] = [ci for ci in local[i]
-                        if cands[i][ci][3] in fwd[i]
-                        and cands[i][ci][4] in bwd[i]]
-            if not local[i]:
-                return None
-        assign = [-1] * n_d
-        used_count = [0] * n_r
-        rects: List[List[Tuple[int, int, int, int]]] = [[] for _ in range(n_r)]
-
-        def ok(i: int, ci: int) -> bool:
-            r, x, y, lp, rp = cands[i][ci]
-            if used_count[r.idx] >= r.uses:
-                return False
-            d = damages[i]
-            rect = (x, y, d.width, d.height)
-            if any(_overlap(rect, q) for q in rects[r.idx]):
-                return False
-            if i > 0 and assign[i - 1] >= 0 \
-                    and cands[i - 1][assign[i - 1]][4] != lp:
-                return False
-            if i < n_d - 1 and assign[i + 1] >= 0 \
-                    and rp != cands[i + 1][assign[i + 1]][3]:
-                return False
-            return True
-
-        def mrv_backtrack() -> bool:
-            mrv_i = -1
-            mrv_opts: List[int] = []
-            mrv_n = 10 ** 12
-            for i in range(n_d):
-                if assign[i] >= 0:
-                    continue
-                opts = [ci for ci in local[i] if ok(i, ci)]
-                if not opts:
-                    return False
-                if len(opts) < mrv_n:
-                    mrv_n, mrv_i, mrv_opts = len(opts), i, opts
-            if mrv_i < 0:
-                return True
-            i = mrv_i
-            d = damages[i]
-            # 先试复用边料（张数紧时更快撞出解）
-            opts = sorted(
-                mrv_opts,
-                key=lambda ci: (1 if used_count[cands[i][ci][0].idx] == 0
-                                else 0, cands[i][ci][0].idx,
-                                cands[i][ci][1], cands[i][ci][2]))
-            for ci in opts:
-                r, x, y, _, _ = cands[i][ci]
-                rect = (x, y, d.width, d.height)
-                assign[i] = ci
-                used_count[r.idx] += 1
-                rects[r.idx].append(rect)
-                if mrv_backtrack():
-                    return True
-                rects[r.idx].pop()
-                used_count[r.idx] -= 1
-                assign[i] = -1
-            return False
-
-        return assign if mrv_backtrack() else None
 
     chosen_area: Optional[int] = None
     chosen_dim: Optional[int] = None
@@ -466,7 +623,7 @@ def solve(payload: Any) -> Dict[str, Any]:
                                        or (dim == chosen_dim
                                            and area > chosen_area)):
             break  # 子集按 (张数, 面积) 升序，更差的无需再试
-        if feasible_on(idxs) is not None:
+        if feasible_on(idxs):
             if chosen_dim is None:
                 chosen_dim, chosen_area = dim, area
             if dim == chosen_dim and area == chosen_area:
@@ -479,51 +636,66 @@ def solve(payload: Any) -> Dict[str, Any]:
     # ------------------------------------------------------------------ #
     # 阶段二：在所有达到 (最优张数, 最优面积) 的可行子集的并集上，按
     # 破损输入顺序、候选 (边料,x,y) 升序 DFS，约束最终张数=D*、占用
-    # 面积=A*。第一条完整可行路径即全局字典序最小方案。
+    # 面积=A*。位段顺序即候选字典序，故从低位到高位枚举，第一条完整
+    # 可行路径即全局字典序最小方案。
     # ------------------------------------------------------------------ #
     aset = {b for idxs in feasible_subsets for b in idxs}
-    ordered_local: List[List[int]] = [
-        [ci for ci, c in enumerate(cands[i]) if c[0].idx in aset]
-        for i in range(n_d)
-    ]
-    # cands[i] 已按 (边料序号, x, y) 排序，ordered_local 保序。
+    union_mask = 0
+    for b in aset:
+        union_mask |= remnant_bits[b]
+    domain_lex = [domain0[i] & union_mask for i in range(n_d)]
+
     final_assign = [-1] * n_d
     used_count = [0] * n_r
-    used_area = 0
-    rects2: List[List[Tuple[int, int, int, int]]] = [[] for _ in range(n_r)]
+    forbidden2 = [0] * n_d
+    closed2 = 0
 
     def lex_backtrack(i: int, distinct: int, used_area: int) -> bool:
+        nonlocal closed2
         # 张数/面积不得越过最优值
         if distinct > chosen_dim or used_area > chosen_area:
             return False
         if i == n_d:
             return distinct == chosen_dim and used_area == chosen_area
-        d = damages[i]
-        prev_rp = cands[i - 1][final_assign[i - 1]][4] if i > 0 else None
-        for ci in ordered_local[i]:
-            r, x, y, lp, rp = cands[i][ci]
-            if prev_rp is not None and lp != prev_rp:
-                continue
+        bits = domain_lex[i] & ~(forbidden2[i] | closed2)
+        if i > 0:
+            prev_rp = anchors[i - 1][final_assign[i - 1]][5]
+            bits &= lp_bits[i].get(prev_rp, 0)
+        off = offsets[i]
+        while bits:
+            lsb = bits & -bits
+            bits ^= lsb
+            k = lsb.bit_length() - 1 - off
+            _, r, x, y, lp, rp = anchors[i][k]
             fresh = used_count[r.idx] == 0
-            if fresh and distinct + 1 > chosen_dim:
-                continue
-            if used_count[r.idx] >= r.uses:
-                continue
-            new_area = used_area + (remnant_area[r.idx] if fresh else 0)
-            if new_area > chosen_area:
-                continue
-            rect = (x, y, d.width, d.height)
-            if any(_overlap(rect, q) for q in rects2[r.idx]):
-                continue
-            final_assign[i] = ci
+            if fresh:
+                if distinct + 1 > chosen_dim:
+                    continue
+                new_area = used_area + remnant_area[r.idx]
+                if new_area > chosen_area:
+                    continue
+            else:
+                new_area = used_area
+            # 快照几何冲突与次数封锁，供回溯还原
+            snap_forb = [(q, forbidden2[q]) for q in range(i + 1, n_d)]
+            conflict = row_conflict[i][k]
+            for q, _ in snap_forb:
+                forbidden2[q] |= conflict
+            closed_before = closed2
             used_count[r.idx] += 1
-            rects2[r.idx].append(rect)
+            if used_count[r.idx] >= r.uses:
+                closed2 |= remnant_bits[r.idx]
+            final_assign[i] = k
+
             if lex_backtrack(i + 1,
                              distinct + (1 if fresh else 0), new_area):
                 return True
-            rects2[r.idx].pop()
-            used_count[r.idx] -= 1
+
             final_assign[i] = -1
+            closed2 = closed_before
+            used_count[r.idx] -= 1
+            for q, v in snap_forb:
+                forbidden2[q] = v
         return False
 
     if not lex_backtrack(0, 0, 0):
@@ -531,13 +703,15 @@ def solve(payload: Any) -> Dict[str, Any]:
         ev = _infeasibility_evidence(damages, remnants, cands)
         return {"feasible": False, "evidence": ev.as_dict()}
 
+    orig_assign = [anchors[i][ci][0] for i, ci in enumerate(final_assign)]
     final_state = _State(
-        assignments=final_assign,
+        assignments=orig_assign,
         used_count=[0] * n_r,
         rects=[[] for _ in range(n_r)],
         distinct=0, waste=0)
     for i, ci in enumerate(final_assign):
-        r, x, y, _, _ = cands[i][ci]
+        orig_ci = orig_assign[i]
+        r, x, y, _, _ = cands[i][orig_ci]
         final_state.used_count[r.idx] += 1
         final_state.rects[r.idx].append(
             (x, y, damages[i].width, damages[i].height))
@@ -546,7 +720,8 @@ def solve(payload: Any) -> Dict[str, Any]:
                             for r, n in enumerate(final_state.used_count)
                             if n > 0)
 
-    return _materialize(final_assign, cands, damages, remnants, final_state)
+    orig_assign = [anchors[i][ci][0] for i, ci in enumerate(final_assign)]
+    return _materialize(orig_assign, cands, damages, remnants, final_state)
 
 
 def _materialize(assignments: List[int],

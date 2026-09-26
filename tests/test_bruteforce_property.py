@@ -127,6 +127,53 @@ class TestAgainstBruteForce(unittest.TestCase):
         self.assertGreater(checked, 40)  # 确保确实有大量可行实例被比较
 
 
+class TestFivePieceTimeout(unittest.TestCase):
+    def test_five_30x30_on_eight_60x60_fast(self):
+        # 回归：5 处 30×30 破损 + 8 张 60×60 边料（period=1、uses=5），
+        # 旧实现逐候选线性扫描导致请求 15s 内无法裁决；最优为两张边料
+        # （每张恰好容纳四片），占用 7200、废料 2700。
+        import time
+        payload = {
+            "damages": [{"width": 30, "height": 30} for _ in range(5)],
+            "remnants": [
+                {"width": 60, "height": 60, "period": 1, "origin": 0,
+                 "uses": 5} for _ in range(8)
+            ],
+        }
+        t0 = time.time()
+        res = solve(payload)
+        self.assertLess(time.time() - t0, 15.0)
+        self.assertTrue(res["feasible"], res)
+        self.assertEqual(len(res["placements"]), 5)
+        self.assertGreaterEqual(res["distinctRemnantCount"], 2)
+        self.assertEqual(res["distinctRemnantCount"], 2)
+        self.assertEqual(res["cutArea"], 4500)
+        self.assertEqual(res["occupiedRemnantArea"], 7200)
+        self.assertEqual(res["wasteArea"], 2700)
+        # 硬约束复核：次数、不越界、同料不重叠、接缝相位相等
+        used = {}
+        rects = {}
+        for p in res["placements"]:
+            used[p["remnant"]] = used.get(p["remnant"], 0) + 1
+            self.assertLessEqual(used[p["remnant"]], 5)
+            self.assertLessEqual(p["x"] + p["width"], 60)
+            self.assertLessEqual(p["y"] + p["height"], 60)
+            self.assertEqual(p["phaseLeft"], 0)
+            self.assertEqual(p["phaseRight"], 0)
+            rects.setdefault(p["remnant"], []).append(
+                (p["x"], p["y"], p["width"], p["height"]))
+        for rs in rects.values():
+            for a in range(len(rs)):
+                for b in range(a + 1, len(rs)):
+                    ax, ay, aw, ah = rs[a]
+                    bx, by, bw, bh = rs[b]
+                    self.assertFalse(
+                        ax < bx + bw and bx < ax + aw
+                        and ay < by + bh and by < ay + ah)
+        # 两张边料各放四片与一片是最优装填的结构特征
+        self.assertEqual(sorted(used.values()), [1, 4])
+
+
 class TestLargeStress(unittest.TestCase):
     def test_max_sized_instance_fast(self):
         # 业务上限规模：5 处破损、8 张大边料、高可用次数
