@@ -149,6 +149,43 @@ class TestLargeStress(unittest.TestCase):
         # period 相同、origin 各异：全部可压在边料0 时字典序最小
         self.assertEqual(res["distinctRemnantCount"], 1)
 
+    def test_five_equal_damages_on_uniform_remnants(self):
+        # 验收场景：5 处 30×30 破损、8 张 60×60 同参数边料
+        # （period=1、origin=0、uses=5）。单张面积 3600 < 4500，
+        # 至少需两张；须在 15 秒响应窗口内返回最优方案。
+        payload = {
+            "damages": [{"width": 30, "height": 30} for _ in range(5)],
+            "remnants": [
+                {"width": 60, "height": 60, "period": 1, "origin": 0,
+                 "uses": 5} for _ in range(8)
+            ],
+        }
+        import time
+        t0 = time.time()
+        res = solve(payload)
+        self.assertLess(time.time() - t0, 15.0)
+        self.assertTrue(res["feasible"], res)
+        self.assertEqual(res["cutArea"], 4500)
+        self.assertEqual(res["occupiedRemnantArea"], 7200)
+        self.assertEqual(res["wasteArea"], 2700)
+        self.assertGreaterEqual(res["distinctRemnantCount"], 2)
+        # 字典序最小：前四片铺满边料0 四角，第五片落在边料1 原点
+        seq = [(p["remnant"], p["x"], p["y"]) for p in res["placements"]]
+        self.assertEqual(seq, [(0, 0, 0), (0, 0, 30), (0, 30, 0),
+                               (0, 30, 30), (1, 0, 0)])
+        # 同料裁片互不重叠（边界相接允许）
+        rects = [(p["remnant"], p["x"], p["y"], p["width"], p["height"])
+                 for p in res["placements"]]
+        for i in range(len(rects)):
+            for j in range(i + 1, len(rects)):
+                ri, ax, ay, aw, ah = rects[i]
+                rj, bx, by, bw, bh = rects[j]
+                if ri != rj:
+                    continue
+                self.assertFalse(
+                    ax < bx + bw and bx < ax + aw and ay < by + bh
+                    and by < ay + ah, "同一边料上的裁片重叠")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

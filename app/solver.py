@@ -364,21 +364,46 @@ def solve(payload: Any) -> Dict[str, Any]:
         subsets.append((len(idxs), sum(remnant_area[b] for b in idxs), idxs))
     subsets.sort(key=lambda t: (t[0], t[1], t[2]))
 
+    cut_area = sum(d.width * d.height for d in damages)
+
+    # 子集可行性只取决于边料参数（宽高/周期/原点/次数）的多重集合，与
+    # 边料序号无关：相同参数组合的子集同构，缓存判定结果，避免对同构
+    # 子集重复回溯（例如 8 张同参数边料的 28 个二元子集只需解一次）。
+    remnant_profile = [(r.width, r.height, r.period, r.origin, r.uses)
+                       for r in remnants]
+    feas_cache: Dict[Tuple[Tuple[int, ...], ...], Optional[List[int]]] = {}
+
     def feasible_on(allowed: Tuple[int, ...]) -> Optional[List[int]]:
         """MRV 回溯判定 allowed 边料集上是否可行；可行返回某完整分配。"""
         aset = set(allowed)
         # 预筛 1：次数总容量
         if sum(remnants[r].uses for r in aset) < n_d:
             return None
+        # 预筛 2：可裁总面积必须容纳全部裁片（同料裁片互不重叠，
+        # 实际补入面积恒为 cut_area，超出即不可行，无需回溯证明）
+        if sum(remnant_area[r] for r in aset) < cut_area:
+            return None
+        # 预筛 3：几何容纳上限——每张边料可放的裁片数受
+        # “可裁面积 ÷ 最小可容裁片面积”与可用次数双重限制，
+        # 各边料容纳上限之和不足 n_d 即不可行，无需回溯证明
+        cap = 0
+        for r in aset:
+            rr = remnants[r]
+            fit = [d.width * d.height for d in damages
+                   if d.width <= rr.width and d.height <= rr.height]
+            if fit:
+                cap += min(remnant_area[r] // min(fit), rr.uses)
+        if cap < n_d:
+            return None
         local: List[List[int]] = [
             [ci for ci in range(len(cands[i]))
              if cands[i][ci][0].idx in aset]
             for i in range(n_d)
         ]
-        # 预筛 2：每处破损在该子集上至少有候选
+        # 预筛 4：每处破损在该子集上至少有候选
         if any(not local[i] for i in range(n_d)):
             return None
-        # 预筛 3：在该子集上重算水印相位链可达性，只保留链安全候选
+        # 预筛 5：在该子集上重算水印相位链可达性，只保留链安全候选
         fwd: List[set] = [{cands[0][ci][3] for ci in local[0]}]
         for i in range(1, n_d):
             rr = {cands[i - 1][ci][4] for ci in local[i - 1]
@@ -466,7 +491,10 @@ def solve(payload: Any) -> Dict[str, Any]:
                                        or (dim == chosen_dim
                                            and area > chosen_area)):
             break  # 子集按 (张数, 面积) 升序，更差的无需再试
-        if feasible_on(idxs) is not None:
+        profile_key = tuple(sorted(remnant_profile[b] for b in idxs))
+        if profile_key not in feas_cache:
+            feas_cache[profile_key] = feasible_on(idxs)
+        if feas_cache[profile_key] is not None:
             if chosen_dim is None:
                 chosen_dim, chosen_area = dim, area
             if dim == chosen_dim and area == chosen_area:
