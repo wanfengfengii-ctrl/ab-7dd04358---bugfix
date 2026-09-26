@@ -1,0 +1,30 @@
+services:
+  app:
+    build: .
+    image: guji-tapei:latest
+    environment:
+      # 容器内监听端口（通常保持 8080；宿主机端口见下方 ${HOST_PORT}）
+      PORT: "8080"
+    ports:
+      # 可配置宿主机端口：HOST_PORT=9090 docker compose up -d
+      - "${HOST_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 4s
+    restart: unless-stopped
+
+  # 一次性验证服务：代码测试 → 构建校验 → API 冒烟，以退出码报告结果
+  verify:
+    build: .
+    image: guji-tapei:latest
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      APP_URL: "http://app:8080"
+    entrypoint: ["python3", "scripts/verify.py"]
+    restart: "no"

@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>古籍补纸配片 · 水印线连续性求解</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>古籍补纸配片</h1>
+    <p class="subtitle">按阅读方向排列破损，选择边料与整数裁切起点，保证接缝水印相位连续</p>
+  </header>
+
+  <main class="layout">
+    <!-- 左：录入草稿 -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2>破损（按阅读方向）</h2>
+        <div class="stepper">
+          <button type="button" id="dmg-minus" class="btn small">−</button>
+          <span id="dmg-count">3</span>
+          <button type="button" id="dmg-plus" class="btn small">＋</button>
+        </div>
+      </div>
+      <div id="damages" class="cards"></div>
+
+      <div class="panel-head second">
+        <h2>边料（可裁区域）</h2>
+        <div class="stepper">
+          <button type="button" id="rem-minus" class="btn small">−</button>
+          <span id="rem-count">4</span>
+          <button type="button" id="rem-plus" class="btn small">＋</button>
+        </div>
+      </div>
+      <div id="remnants" class="cards"></div>
+
+      <div class="actions">
+        <button type="button" id="btn-solve" class="btn primary">发起配片</button>
+        <button type="button" id="btn-sample" class="btn">载入示例</button>
+        <button type="button" id="btn-clear" class="btn ghost">清空结果</button>
+      </div>
+      <p class="hint">优化顺序：① 使用边料张数最少 → ② 裁切废料总面积最小 → ③（边料序号, 起点x, 起点y）字典序最小</p>
+    </section>
+
+    <!-- 右：结果 -->
+    <section class="panel result-panel">
+      <h2>配片结果</h2>
+      <div id="status" class="status idle">尚未发起配片</div>
+      <div id="summary" class="summary hidden"></div>
+      <div id="placements" class="placements"></div>
+      <div id="evidence" class="evidence hidden"></div>
+      <div id="canvas-wrap" class="canvas-wrap hidden">
+        <h3>排料示意（边料视角）</h3>
+        <canvas id="canvas" width="560" height="320"></canvas>
+        <p class="hint" id="canvas-note"></p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>POST /api/solve · GET /healthz</span>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

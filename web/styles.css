@@ -1,0 +1,194 @@
+:root {
+  --bg: #f4efe6;
+  --panel: #fffdf8;
+  --ink: #2e2a24;
+  --muted: #7c7468;
+  --accent: #8a5a2b;
+  --accent-soft: #e7d5bf;
+  --ok: #2e7d4f;
+  --ok-bg: #e6f2ea;
+  --err: #b3392f;
+  --err-bg: #f8e7e5;
+  --line: #ddd2c2;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: "Noto Serif SC", "Songti SC", "SimSun", Georgia, serif;
+  background: var(--bg);
+  color: var(--ink);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  padding: 22px 28px 14px;
+  border-bottom: 2px solid var(--accent);
+  background: linear-gradient(180deg, #fbf7ef, #f4efe6);
+}
+.topbar h1 { margin: 0; font-size: 24px; letter-spacing: 4px; }
+.subtitle { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+
+.layout {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(420px, 1.1fr) minmax(380px, 1fr);
+  gap: 18px;
+  padding: 18px 24px;
+}
+@media (max-width: 960px) {
+  .layout { grid-template-columns: 1fr; }
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 18px;
+  box-shadow: 0 2px 8px rgba(80, 60, 30, 0.06);
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.panel-head.second { margin-top: 22px; }
+.panel-head h2 { font-size: 17px; margin: 0 0 10px; }
+
+.stepper { display: flex; align-items: center; gap: 8px; }
+.stepper span { min-width: 20px; text-align: center; font-weight: bold; }
+
+.cards { display: flex; flex-direction: column; gap: 10px; }
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fff;
+}
+.card .row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.card .title {
+  font-weight: bold;
+  min-width: 64px;
+  color: var(--accent);
+}
+.card label {
+  font-size: 12px;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.card input {
+  width: 68px;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  font: inherit;
+  font-size: 13px;
+  background: #fdfbf7;
+}
+.card input.wide { width: 84px; }
+.card .tag {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.btn {
+  font: inherit;
+  padding: 7px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--accent);
+  cursor: pointer;
+  transition: background .15s;
+}
+.btn:hover { background: var(--accent-soft); }
+.btn.small { padding: 1px 9px; font-size: 14px; }
+.btn.primary { background: var(--accent); color: #fff; }
+.btn.primary:hover { background: #6f4520; }
+.btn.ghost { border-color: var(--line); color: var(--muted); }
+
+.actions { display: flex; gap: 10px; margin-top: 18px; }
+.hint { font-size: 12px; color: var(--muted); margin: 10px 0 0; }
+
+.status {
+  padding: 9px 12px;
+  border-radius: 6px;
+  font-size: 14px;
+  margin-bottom: 12px;
+}
+.status.idle { background: #f0ebe2; color: var(--muted); }
+.status.ok { background: var(--ok-bg); color: var(--ok); font-weight: bold; }
+.status.err { background: var(--err-bg); color: var(--err); font-weight: bold; }
+
+.summary {
+  border: 1px dashed var(--accent);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fcf8f1;
+  font-size: 13.5px;
+  line-height: 1.9;
+  margin-bottom: 12px;
+}
+.summary b { color: var(--accent); }
+
+.placements { display: flex; flex-direction: column; gap: 8px; }
+.p-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 12px;
+  background: #fff;
+  font-size: 13.5px;
+  line-height: 1.7;
+}
+.p-item .ph { color: var(--accent); font-weight: bold; }
+.p-item .seam {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--ok);
+}
+
+.evidence {
+  border-left: 4px solid var(--err);
+  background: var(--err-bg);
+  padding: 10px 14px;
+  border-radius: 0 6px 6px 0;
+  font-size: 13.5px;
+  line-height: 1.7;
+}
+.evidence code {
+  background: rgba(0,0,0,.06);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.canvas-wrap { margin-top: 16px; }
+.canvas-wrap h3 { font-size: 14px; margin: 0 0 8px; }
+#canvas {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbf6ec;
+}
+
+.hidden { display: none; }
+
+footer {
+  text-align: center;
+  padding: 12px;
+  font-size: 12px;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+}
